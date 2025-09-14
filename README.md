@@ -1,12 +1,16 @@
 # YOLO-E Real-time Gaming Detection System
 
-A client-server architecture for real-time object detection in games using YOLO-E (YOLO-Eleven) AI model. Designed to identify enemies and other entities in games with minimal performance impact on the gaming PC.
+## 🤖 Why YOLO-E?
+
+[YOLO-E (Real-Time Seeing Anything)](https://arxiv.org/html/2503.07465v1) represents a breakthrough in open-vocabulary object detection, delivering the flexibility to detect arbitrary objects through simple text prompts like "enemy soldier with rifle" without retraining. Unlike traditional YOLO models limited to fixed categories, YOLO-E achieves [+3.5 AP improvement over YOLO-Worldv2 with 1.4× faster inference](https://github.com/THU-MIG/yoloe) and [305+ FPS on NVIDIA T4 GPUs](https://docs.ultralytics.com/models/yoloe/), making it the first open-vocabulary model truly suitable for real-time gaming applications. Perfect for dynamic scenarios where enemy types, character skins, or game content changes frequently—simply update your text prompts instead of retraining entire models.
+
+This project implements a client-server architecture using YOLO-E to identify enemies and other entities in games with minimal performance impact on the gaming PC, while leveraging the model's revolutionary "seeing anything" capabilities for maximum flexibility.
 
 ## 🎯 Features
 
 - **Dual Monitor Setup**: Capture from primary monitor, display overlay on secondary
 - **WebSocket Streaming**: Low-latency communication between client and GPU server
-- **Configurable Detection**: Custom prompts for different enemy types
+- **Open-Vocabulary Detection**: Use text prompts for custom enemy types without retraining
 - **Performance Controls**: Frame skipping, quality adjustment, and scaling options
 - **Window/Region Capture**: Support for specific game windows or screen regions
 
