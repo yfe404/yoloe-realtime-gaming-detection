@@ -14,6 +14,7 @@
 # -------------------------------------------------------------
 
 import json
+import traceback
 from typing import List, Optional
 
 import cv2
@@ -49,9 +50,14 @@ active_prompts: List[str] = DEFAULT_PROMPTS.copy()
 def ensure_model():
     global model
     if model is None:
-        model = YOLOE(MODEL_PATH)
-        if active_prompts:
-            model.set_classes(active_prompts, model.get_text_pe(active_prompts))
+        try:
+            model = YOLOE(MODEL_PATH)
+            if active_prompts:
+                model.set_classes(active_prompts, model.get_text_pe(active_prompts))
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            traceback.print_exc()
+            raise
 
 
 @app.get("/")
@@ -89,51 +95,65 @@ async def infer(ws: WebSocket):
         await ws.send_text(json.dumps({"ready": True, "prompts": active_prompts}))
 
         while True:
-            msg = await ws.receive()
-            if "bytes" not in msg:
-                # Client might send a control text message
-                if msg.get("text") == "close":
-                    break
-                continue
+            try:
+                msg = await ws.receive()
+                if "bytes" not in msg:
+                    # Client might send a control text message
+                    if msg.get("text") == "close":
+                        break
+                    continue
 
-            data: bytes = msg["bytes"]
-            if not data:
-                continue
-            if len(data) > 20_000_000:  # 20 MB safety
-                continue
+                data: bytes = msg["bytes"]
+                if not data:
+                    continue
+                if len(data) > 20_000_000:  # 20 MB safety
+                    continue
 
-            # Decode JPEG -> BGR image
-            arr = np.frombuffer(data, dtype=np.uint8)
-            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if frame is None:
+                # Decode JPEG -> BGR image
+                arr = np.frombuffer(data, dtype=np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if frame is None:
+                    continue
+
+                # YOLOE inference
+                results = model.predict(
+                    frame,
+                    imgsz=imgsz,
+                    conf=conf,
+                    iou=iou,
+                    retina_masks=retina_masks,
+                    half=half,
+                    device=0,        # assume GPU device 0; change if needed
+                    verbose=False,
+                    max_det=300,
+                    persist=True
+                )
+                # Annotated overlay
+                overlay = results[0].plot()
+
+                # Encode to JPEG
+                ok, buf = cv2.imencode(".jpg", overlay, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+                if not ok:
+                    continue
+
+                await ws.send_bytes(buf.tobytes())
+
+            except Exception as e:
+                print(f"Error in inference loop: {e}")
+                traceback.print_exc()
+                # Try to send error info to client
+                try:
+                    await ws.send_text(json.dumps({"error": str(e)}))
+                except Exception:
+                    pass
+                # Continue processing instead of breaking
                 continue
-
-            # YOLOE inference
-            results = model.predict(
-                frame,
-                imgsz=imgsz,
-                conf=conf,
-                iou=iou,
-                retina_masks=retina_masks,
-                half=half,
-                device=0,        # assume GPU device 0; change if needed
-                verbose=False,
-                max_det=300,
-                persist=True
-            )
-            # Annotated overlay
-            overlay = results[0].plot()
-
-            # Encode to JPEG
-            ok, buf = cv2.imencode(".jpg", overlay, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
-            if not ok:
-                continue
-
-            await ws.send_bytes(buf.tobytes())
 
     except WebSocketDisconnect:
-        pass
+        print("Client disconnected")
     except Exception as e:
+        print(f"WebSocket error: {e}")
+        traceback.print_exc()
         # Try to send error info before closing
         try:
             await ws.send_text(json.dumps({"error": str(e)}))
