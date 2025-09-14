@@ -2,10 +2,10 @@
 
 This guide covers fine-tuning YOLO-E models specifically for gaming object detection to improve accuracy and performance.
 
-## 🎯 Why Fine-Tune for Gaming?
+## 🎯 Why Fine-Tune YOLO-E for Gaming?
 
-Pre-trained YOLO-E models are trained on general datasets (COCO, Open Images) which don't capture:
-- **Game-specific art styles** (cartoon, realistic, pixel art, cel-shaded)
+Pre-trained YOLO-E models are trained on general datasets (Objects365, LVIS, GoldG, Flickr30k) which don't capture:
+- **Game-specific art styles** (cartoon, realistic, pixel art, cel-shaded)  
 - **Unique visual elements** (UI overlays, special effects, lighting)
 - **Game-specific objects** (fantasy creatures, sci-fi weapons, specific character designs)
 - **Environmental contexts** (indoor maps, outdoor terrains, specific game lighting)
@@ -17,342 +17,320 @@ Pre-trained YOLO-E models are trained on general datasets (COCO, Open Images) wh
 - **False positives** on UI elements, effects, or similar-looking objects
 - **Missed detections** of important game entities
 
-## 🛠️ Fine-Tuning Approaches
+## 🛠️ YOLO-E Specific Fine-Tuning Approaches
 
-### 1. Prompt Engineering (Quickest Start)
+### 1. Model Selection and Architecture
 
-**Before Fine-tuning**: Optimize prompts for your specific game
+**Available YOLO-E Models:**
+```python
+# Text/Visual Prompt Models (recommended for gaming)
+"yoloe-11s-seg.pt"    # 70MB, fastest
+"yoloe-11m-seg.pt"    # Medium speed/accuracy
+"yoloe-11l-seg.pt"    # 67MB, best accuracy
+
+# Prompt-Free Models (4,585 built-in classes)
+"yoloe-11s-seg-pf.pt" # Good for general object detection
+"yoloe-11m-seg-pf.pt"
+"yoloe-11l-seg-pf.pt"
+```
+
+**For Gaming Applications:**
+- Use **text/visual prompt models** for custom enemy types
+- Consider **prompt-free models** for general object detection
+- **Detection-only models**: Convert segmentation models if you only need bounding boxes
+
+### 2. Quick Start: Text Prompt Optimization (Zero Training)
+
+**Before Fine-tuning**: Optimize prompts for immediate improvement
 
 ```python
-# Generic prompts (poor performance)
-PROMPTS = ["enemy soldier", "hostile character"]
+from ultralytics import YOLOE
 
-# Game-specific prompts (much better)
-PROMPTS = [
-    "Counter-Strike terrorist with AK-47",
-    "enemy player in military fatigues holding rifle",
-    "hostile combatant in tactical gear aiming weapon",
-    "opponent wearing helmet and body armor"
+# Load model
+model = YOLOE("yoloe-11l-seg.pt")
+
+# Game-specific prompts (much better than generic)
+game_prompts = [
+    "enemy soldier in tactical gear with rifle",
+    "hostile player in combat armor",
+    "armed opponent with assault weapon",
+    "enemy combatant in military uniform"
 ]
+
+# Set classes (this replaces generic LVIS classes)
+model.set_classes(game_prompts, model.get_text_pe(game_prompts))
+
+# Run inference
+results = model.predict("game_screenshot.jpg", conf=0.25)
 ```
 
-**Prompt Optimization Process:**
-1. **Analyze your game**: Take 50-100 screenshots of typical enemies
-2. **Describe visually**: What do enemies actually look like?
-3. **Add context**: Include art style, lighting, perspective
-4. **Test iteratively**: Monitor confidence scores and accuracy
+**Expected improvement**: 50-200% better detection without any training
 
-### 2. Few-Shot Learning with Custom Classes
+### 3. Fine-Tuning with Custom Gaming Dataset
 
-**Step 1: Create Custom Dataset**
-```bash
-# Collect game screenshots
-mkdir dataset/
-mkdir dataset/images/
-mkdir dataset/labels/
+**Step 1: Trainer Selection**
+YOLO-E uses specialized trainers:
 
-# Recommended: 200-500 images per enemy type
-# Minimum: 50-100 images per class
+```python
+from ultralytics import YOLOE
+from ultralytics.models.yolo.yoloe import YOLOEPESegTrainer as Trainer
+
+# For instance segmentation fine-tuning
+model = YOLOE("yoloe-11s-seg.pt")
+results = model.train(
+    data="gaming_dataset.yaml",
+    epochs=80,
+    trainer=Trainer,  # Essential for YOLO-E
+    # ... other parameters
+)
 ```
 
-**Step 2: Annotation Tools**
-- **Roboflow**: Web-based, YOLO format export
-- **LabelImg**: Desktop tool for bounding boxes
-- **CVAT**: Advanced annotation for complex scenes
-
-**Step 3: Dataset Structure**
+**Step 2: YOLO-E Specific Training Parameters**
+```python
+results = model.train(
+    data="gaming_dataset.yaml",
+    epochs=80,
+    close_mosaic=10,          # YOLO-E specific: disable mosaic near end
+    batch=16,
+    optimizer="AdamW",        # Recommended for YOLO-E
+    lr0=1e-3,                 # Learning rate
+    warmup_bias_lr=0.0,       # YOLO-E specific
+    weight_decay=0.025,       # YOLO-E specific
+    momentum=0.9,
+    workers=4,
+    device="0",
+    trainer=Trainer,
+)
 ```
-dataset/
-├── images/
-│   ├── train/          # 70-80% of images
-│   ├── val/            # 15-20% of images
-│   └── test/           # 5-10% of images
-├── labels/
-│   ├── train/          # Corresponding YOLO format labels
-│   ├── val/
-│   └── test/
-└── data.yaml          # Dataset configuration
+
+### 4. Linear Probing (Limited Data)
+
+When you have limited gaming data, use linear probing to fine-tune only the classification head:
+
+```python
+from ultralytics import YOLOE
+from ultralytics.models.yolo.yoloe import YOLOEPESegTrainer as Trainer
+
+model = YOLOE("yoloe-11s-seg.pt")
+
+# Freeze everything except classification head
+head_index = len(model.model.model) - 1
+freeze = [str(f) for f in range(0, head_index)]
+
+# Freeze specific head components except classification
+for name, child in model.model.model[-1].named_children():
+    if "cv3" not in name:
+        freeze.append(f"{head_index}.{name}")
+
+# Freeze detection branch components
+freeze.extend([
+    f"{head_index}.cv3.0.0", f"{head_index}.cv3.0.1",
+    f"{head_index}.cv3.1.0", f"{head_index}.cv3.1.1", 
+    f"{head_index}.cv3.2.0", f"{head_index}.cv3.2.1",
+])
+
+results = model.train(
+    data="gaming_dataset.yaml",
+    epochs=50,  # Fewer epochs for linear probing
+    trainer=Trainer,
+    freeze=freeze,
+    # ... other parameters
+)
 ```
 
-**data.yaml example:**
+### 5. Detection-Only Model Training
+
+Convert segmentation model to detection for better performance:
+
+```python
+from ultralytics import YOLOE
+from ultralytics.models.yolo.yoloe import YOLOEPETrainer as Trainer
+
+# Create detection model from YAML, load segmentation weights
+model = YOLOE("yoloe-11s.yaml").load("yoloe-11s-seg.pt")
+
+# Train as detection model (faster than segmentation)
+results = model.train(
+    data="gaming_dataset.yaml",
+    epochs=80,
+    trainer=Trainer,  # Use YOLOEPETrainer for detection
+    # ... other parameters
+)
+```
+
+## 📈 Gaming-Specific Optimizations
+
+### 1. Dataset Preparation for Gaming
 ```yaml
-# Dataset configuration
-path: ./dataset
+# gaming_dataset.yaml
+path: ./gaming_dataset
 train: images/train
 val: images/val
 test: images/test
 
-# Classes (customize for your game)
+# Gaming-specific classes
 names:
   0: enemy_soldier
-  1: enemy_sniper
-  2: friendly_player
-  3: neutral_npc
-  4: enemy_vehicle
+  1: friendly_player
+  2: enemy_vehicle
+  3: hostile_npc
+  4: neutral_object
 
-# Number of classes
 nc: 5
 ```
 
-### 3. Transfer Learning Fine-Tuning
-
-**Step 1: Environment Setup**
-```bash
-# Install requirements
-pip install ultralytics wandb  # wandb optional for logging
-
-# GPU requirements
-# Minimum: 8GB VRAM (RTX 3070+)
-# Recommended: 12GB+ VRAM (RTX 4070+)
+### 2. Gaming Data Augmentation
+```python
+results = model.train(
+    # Gaming-specific augmentations
+    hsv_h=0.015,      # Hue variation for different lighting
+    hsv_s=0.7,        # Saturation for different graphics settings
+    hsv_v=0.4,        # Brightness for day/night cycles
+    degrees=5,        # Less rotation (games have consistent perspective)
+    translate=0.1,    # Small translation
+    scale=0.3,        # Scale variation for zoom levels
+    fliplr=0.5,       # Horizontal flip OK for most games
+    flipud=0.0,       # Usually don't flip vertically in games
+)
 ```
 
-**Step 2: Training Script**
+### 3. Visual Prompt Training
+For few-shot learning with visual examples:
+
 ```python
-# fine_tune_yoloe.py
-from ultralytics import YOLOE
-import torch
+from ultralytics.models.yolo.yoloe import YOLOESegVPTrainer
 
-def fine_tune_gaming_model():
-    # Load pre-trained model
-    model = YOLOE('yoloe11l.pt')  # or yoloe11m.pt for faster training
-    
-    # Training configuration
-    results = model.train(
-        data='dataset/data.yaml',      # Your custom dataset
-        epochs=100,                    # Start with 50-100 epochs
-        imgsz=640,                     # Match your inference size
-        batch=16,                      # Adjust based on GPU memory
-        device=0,                      # GPU device
-        
-        # Learning rate schedule
-        lr0=0.01,                      # Initial learning rate
-        lrf=0.1,                       # Final learning rate factor
-        warmup_epochs=3,
-        
-        # Augmentation (important for games)
-        hsv_h=0.015,                   # Hue augmentation
-        hsv_s=0.7,                     # Saturation augmentation  
-        hsv_v=0.4,                     # Value augmentation
-        degrees=10,                    # Rotation degrees
-        translate=0.1,                 # Translation
-        scale=0.5,                     # Scale variation
-        fliplr=0.5,                    # Horizontal flip
-        
-        # Optimization
-        optimizer='AdamW',             # Often better than SGD
-        weight_decay=0.0005,
-        
-        # Validation
-        val=True,
-        save_period=10,                # Save every 10 epochs
-        
-        # Experiment tracking (optional)
-        project='gaming-yoloe',
-        name='my-game-v1',
-        
-        # Early stopping
-        patience=30,                   # Stop if no improvement for 30 epochs
-        
-        # Mixed precision training (faster)
-        amp=True,
-        
-        # Resume training if interrupted
-        resume=True
-    )
-    
-    return model, results
+# Visual prompt training (advanced)
+model = YOLOE("yoloe-11l-seg.pt")
 
-if __name__ == "__main__":
-    model, results = fine_tune_gaming_model()
-    
-    # Export optimized model
-    model.export(format='onnx')  # For deployment
-    print(f"Training completed. Best model saved as: {results.save_dir}/weights/best.pt")
-```
+# Freeze everything except SAVPE module
+head_index = len(model.model.model) - 1
+freeze = list(range(0, head_index))
+for name, child in model.model.model[-1].named_children():
+    if "savpe" not in name:
+        freeze.append(f"{head_index}.{name}")
 
-**Step 3: Training Monitoring**
-```python
-# Monitor training progress
-def plot_training_results(results_path):
-    import matplotlib.pyplot as plt
-    
-    # Load training results
-    results = torch.load(f"{results_path}/results.pt")
-    
-    # Plot key metrics
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-    
-    # Loss curves
-    axes[0,0].plot(results['train/box_loss'], label='Train Box Loss')
-    axes[0,0].plot(results['val/box_loss'], label='Val Box Loss')
-    axes[0,0].set_title('Box Loss')
-    axes[0,0].legend()
-    
-    # mAP curves  
-    axes[0,1].plot(results['metrics/mAP50'], label='mAP@0.5')
-    axes[0,1].plot(results['metrics/mAP50-95'], label='mAP@0.5:0.95')
-    axes[0,1].set_title('Mean Average Precision')
-    axes[0,1].legend()
-    
-    # Precision/Recall
-    axes[1,0].plot(results['metrics/precision'], label='Precision')
-    axes[1,0].plot(results['metrics/recall'], label='Recall')
-    axes[1,0].set_title('Precision & Recall')
-    axes[1,0].legend()
-    
-    # Learning rate
-    axes[1,1].plot(results['lr/pg0'], label='Learning Rate')
-    axes[1,1].set_title('Learning Rate Schedule')
-    axes[1,1].legend()
-    
-    plt.tight_layout()
-    plt.savefig(f"{results_path}/training_analysis.png")
-    plt.show()
-```
-
-### 4. Advanced Fine-Tuning Techniques
-
-**A. Class-Weighted Loss** (for imbalanced data)
-```python
-# If some enemy types are rare
-class_weights = {
-    0: 1.0,     # common_enemy
-    1: 2.0,     # rare_boss  
-    2: 0.5,     # frequent_npc
-}
-```
-
-**B. Multi-Scale Training**
-```python
-# Train on multiple resolutions for robustness
-imgsz=[416, 512, 640, 768]  # Random selection during training
-```
-
-**C. Knowledge Distillation** (for deployment optimization)
-```python
-# Train large model, then distill to smaller one
-teacher_model = YOLOE('yoloe11x.pt')  # Large, accurate model
-student_model = YOLOE('yoloe11n.pt')  # Small, fast model
-
-# Implement distillation training loop
-```
-
-**D. Pseudo-Labeling**
-```python
-# Use partially trained model to label more data
-def generate_pseudo_labels(model, unlabeled_images, confidence_threshold=0.7):
-    results = model.predict(unlabeled_images, conf=confidence_threshold)
-    # Convert high-confidence predictions to training labels
-    return pseudo_labels
-```
-
-## 📈 Expected Improvements After Fine-Tuning
-
-### Detection Quality
-- **Confidence scores**: 0.1-0.3 → 0.5-0.8+
-- **mAP@0.5**: +20-50% improvement
-- **False positives**: 50-80% reduction
-- **Missed detections**: 30-60% reduction
-
-### Performance Impact
-- **Inference speed**: Similar or slightly faster (optimized weights)
-- **Model size**: Same (transfer learning preserves architecture)
-- **Memory usage**: Unchanged
-
-## 🚀 Deployment Integration
-
-**Step 1: Replace Model**
-```python
-# In remote_server_yoloe_ws.py
-MODEL_PATH = "path/to/your/fine_tuned_model.pt"
-
-# Your custom classes (no need for set_classes anymore)
-# Model already knows your game's objects
-```
-
-**Step 2: Update Confidence Threshold**
-```python
-# Much higher confidence threshold possible
-CONF_TH = 0.35  # Instead of 0.10
-```
-
-**Step 3: Validation Testing**
-```python
-# Test on held-out game footage
-def validate_model(model_path, test_images):
-    model = YOLOE(model_path)
-    results = model.val(data='dataset/data.yaml')
-    
-    print(f"mAP@0.5: {results.box.map50:.3f}")
-    print(f"mAP@0.5:0.95: {results.box.map:.3f}")
-    
-    return results
+model.train(
+    data=training_data,
+    trainer=YOLOESegVPTrainer,  # Visual prompt trainer
+    freeze=freeze,
+    epochs=20,  # Usually needs fewer epochs
+    lr0=16e-3,  # Higher learning rate for visual prompts
+)
 ```
 
 ## 🎮 Game-Specific Considerations
 
-### First-Person Shooters (FPS)
-- **Focus on**: Weapon detection, player poses, team identification
-- **Challenges**: Fast movement, muzzle flash, smoke effects
-- **Dataset tips**: Include various lighting, maps, player skins
+### FPS Games (Counter-Strike, Call of Duty)
+```python
+fps_prompts = [
+    "terrorist with AK-47 rifle",
+    "counter-terrorist with M4A4",
+    "enemy player in tactical vest",
+    "hostile combatant with kevlar armor",
+    "sniper with scoped rifle"
+]
+```
 
-### Real-Time Strategy (RTS)
-- **Focus on**: Unit types, buildings, resource indicators
-- **Challenges**: Small objects, top-down view, crowded scenes
-- **Dataset tips**: Different zoom levels, unit formations
+### MOBA Games (League of Legends, Dota 2)
+```python
+moba_prompts = [
+    "enemy champion in team fight",
+    "hostile minion in lane",
+    "enemy tower structure", 
+    "opponent jungler with abilities",
+    "enemy support character"
+]
+```
 
-### MOBA Games
-- **Focus on**: Champion identification, spell effects, minions
-- **Challenges**: Visual effects, ability animations, team colors
-- **Dataset tips**: Different champions, ability states, team skins
+### Battle Royale (Fortnite, PUBG)
+```python
+br_prompts = [
+    "enemy player with assault rifle",
+    "hostile opponent in building",
+    "enemy squad member",
+    "opponent with sniper rifle",
+    "enemy player in vehicle"
+]
+```
 
-### Battle Royale
-- **Focus on**: Player detection, loot identification, vehicle types
-- **Challenges**: Long-range detection, varied environments, player equipment
-- **Dataset tips**: Multiple maps, different player loadouts, range variations
+## 🔄 Deployment Integration
 
-## 🔄 Iterative Improvement Process
+**Update Server Configuration:**
+```python
+# In remote_server_yoloe_ws.py
+MODEL_PATH = "path/to/your/fine_tuned_yoloe_model.pt"
 
-1. **Baseline**: Start with prompt optimization
-2. **Collect data**: 200-500 images per class minimum
-3. **First fine-tune**: Basic transfer learning (50-100 epochs)
-4. **Evaluate**: Test on real gameplay
-5. **Expand dataset**: Add failure cases, edge cases
-6. **Re-train**: Advanced techniques, more epochs
-7. **Deploy**: Integration testing
-8. **Monitor**: Continuous performance tracking
-9. **Update**: Regular model updates with new game content
+# Higher confidence threshold with fine-tuned model
+CONF_TH = 0.35  # Instead of 0.10
 
-## 📋 Fine-Tuning Checklist
+# Custom game classes automatically loaded
+# No need for set_classes() with fine-tuned models
+```
 
-- [ ] **Data Collection**: 200+ images per enemy type
-- [ ] **Annotation**: High-quality bounding boxes
-- [ ] **Data Split**: 70% train, 20% val, 10% test
-- [ ] **Augmentation**: Game-appropriate transforms
-- [ ] **Training**: Monitor loss curves, mAP improvement
-- [ ] **Validation**: Test on unseen game footage
-- [ ] **Integration**: Update deployment config
-- [ ] **A/B Testing**: Compare with baseline model
-- [ ] **Documentation**: Training parameters, performance metrics
+**Performance Monitoring:**
+```python
+def validate_gaming_model(model_path, test_data):
+    model = YOLOE(model_path)
+    
+    # Validate on gaming test set
+    results = model.val(data="gaming_dataset.yaml")
+    
+    print(f"Gaming mAP@0.5: {results.box.map50:.3f}")
+    print(f"Gaming mAP@0.5:0.95: {results.box.map:.3f}")
+    
+    return results
+```
 
-## 🛠️ Troubleshooting Common Issues
+## 📋 Expected Improvements After Fine-Tuning
 
-### Low Training mAP
-- **Increase epochs**: Try 200-300 for difficult games
-- **Reduce learning rate**: Start with lr0=0.001
-- **Improve annotations**: Double-check label quality
-- **Add more data**: Especially hard examples
+### Detection Quality
+- **Confidence scores**: 0.1-0.3 → 0.5-0.8+
+- **mAP@0.5**: +30-60% improvement on gaming scenes
+- **False positives**: 60-80% reduction
+- **Missed detections**: 40-70% reduction
 
-### Overfitting
-- **Stronger augmentation**: Increase hsv, rotation, scale
-- **Reduce model size**: Use yoloe11m instead of yoloe11l
-- **Early stopping**: Reduce patience parameter
-- **Dropout**: Add regularization
+### Integration Benefits
+- **Higher confidence threshold**: Cleaner detections
+- **Game-specific understanding**: Better context awareness
+- **Reduced false alarms**: Less noise from UI elements
 
-### Slow Convergence
-- **Warmup**: Increase warmup_epochs to 5-10
-- **Optimizer**: Try different optimizers (Adam, AdamW, SGD)
-- **Batch size**: Increase if GPU memory allows
-- **Learning rate schedule**: Use cosine annealing
+## 🚨 Common YOLO-E Fine-Tuning Pitfalls
 
-Remember: Fine-tuning is iterative! Start simple, measure improvement, then add complexity as needed.
+### 1. Wrong Trainer Class
+```python
+# ❌ Wrong - using generic YOLO trainer
+from ultralytics import YOLO
+model = YOLO("yoloe-11s-seg.pt")  # This won't work properly
+
+# ✅ Correct - using YOLO-E trainer
+from ultralytics import YOLOE
+from ultralytics.models.yolo.yoloe import YOLOEPESegTrainer
+model = YOLOE("yoloe-11s-seg.pt")
+model.train(trainer=YOLOEPESegTrainer)
+```
+
+### 2. Missing YOLO-E Specific Parameters
+```python
+# ✅ Include YOLO-E specific parameters
+results = model.train(
+    close_mosaic=10,        # Essential for YOLO-E
+    warmup_bias_lr=0.0,     # YOLO-E specific
+    weight_decay=0.025,     # Different from standard YOLO
+    optimizer="AdamW",      # Recommended for YOLO-E
+)
+```
+
+### 3. Prompt Management After Fine-Tuning
+```python
+# After fine-tuning, your model knows custom classes
+# No need to set_classes() for fine-tuned classes
+
+# ❌ Don't do this with fine-tuned models
+model.set_classes(["enemy"], model.get_text_pe(["enemy"]))
+
+# ✅ Fine-tuned model automatically recognizes trained classes
+results = model.predict("game_screenshot.jpg")
+```
+
+Remember: YOLO-E fine-tuning is more complex than standard YOLO but offers powerful open-vocabulary capabilities. Start with prompt optimization, then move to fine-tuning for maximum gaming performance.
