@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file.
 - **Comprehensive Error Handling**: Graceful degradation and recovery mechanisms
 
 ### 🔧 Fixed Issues
-- **Critical**: Fixed coordinate scaling bug causing predictions to appear at wrong positions (#coordinate-mismatch)
+- **Critical**: Fixed coordinate scaling bug causing predictions to appear at wrong positions
 - **Performance**: Resolved network bottleneck reducing FPS from <4 to 8-15+ FPS
 - **Stability**: Added proper signal handling for clean server shutdown
 - **Compatibility**: Support for any client resolution and scaling factor
